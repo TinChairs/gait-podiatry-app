@@ -22,7 +22,8 @@ import {
   Settings,
   UploadCloud,
   FolderOpen,
-  X
+  X,
+  Camera as SnapshotIcon
 } from "lucide-react";
 
 type PrimaryMode = "capture" | "analysis";
@@ -54,24 +55,26 @@ export default function App() {
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
   const [activeTool, setActiveTool] = useState<Tool>("angle");
   
-  // Settings & Configuration Modal
+  // Settings State
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [namingPrefix, setNamingPrefix] = useState("Trial");
   const [preferredFrameRate, setPreferredFrameRate] = useState("60");
+  const [storagePath, setStoragePath] = useState("C:\\PeakPodiatry\\Captures");
 
-  // Navigation & Drawer
+  // Drawer & Files
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [recordings, setRecordings] = useState<SavedRecording[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
 
-  // Video & Device State
+  // Video Devices
   const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraErrorMsg, setCameraErrorMsg] = useState<string | null>(null);
-  
+
+  // Playback & Dual State
   const [activeClipA, setActiveClipA] = useState<string | null>(null);
   const [activeClipB, setActiveClipB] = useState<string | null>(null);
   const [activeClipName, setActiveClipName] = useState<string>("Trial_01");
@@ -83,11 +86,11 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [syncOffset, setSyncOffset] = useState(0);
 
-  // In-Scrubber Trimming Markers
+  // Trimming
   const [trimIn, setTrimIn] = useState<number | null>(null);
   const [trimOut, setTrimOut] = useState<number | null>(null);
 
-  // Dual Canvas Annotations
+  // Canvas Annotations
   const [annotationsA, setAnnotationsA] = useState<Annotation[]>([]);
   const [annotationsB, setAnnotationsB] = useState<Annotation[]>([]);
   const [currentPointsA, setCurrentPointsA] = useState<Point[]>([]);
@@ -97,10 +100,8 @@ export default function App() {
   const [isMouseDownA, setIsMouseDownA] = useState(false);
   const [isMouseDownB, setIsMouseDownB] = useState(false);
 
-  // Hidden File Input
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
   // References
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoLiveRef = useRef<HTMLVideoElement | null>(null);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
@@ -143,14 +144,13 @@ export default function App() {
     setCameraErrorMsg(null);
     try {
       if (videoLiveRef.current && videoLiveRef.current.srcObject) {
-        const tracks = (videoLiveRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach((track) => track.stop());
+        (videoLiveRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
       }
 
       const constraints: MediaStreamConstraints = {
         video: selectedDeviceId 
-          ? { deviceId: { exact: selectedDeviceId } }
-          : true,
+          ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+          : { width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       };
 
@@ -160,9 +160,9 @@ export default function App() {
         await videoLiveRef.current.play();
       }
       setCameraActive(true);
-    } catch (err: any) {
+    } catch {
       setCameraActive(false);
-      setCameraErrorMsg("Unable to stream video device. Check permissions or select another input in Settings.");
+      setCameraErrorMsg("No camera detected. Connect capture card/webcam and select from dropdown.");
     }
   }, [selectedDeviceId]);
 
@@ -333,6 +333,27 @@ export default function App() {
     setPlaybackRate(rate);
     if (videoARef.current) videoARef.current.playbackRate = rate;
     if (videoBRef.current) videoBRef.current.playbackRate = rate;
+  };
+
+  const exportSnapshot = () => {
+    if (!videoARef.current || !canvasARef.current) return;
+    const video = videoARef.current;
+    const canvas = canvasARef.current;
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = video.videoWidth || canvas.width;
+    exportCanvas.height = video.videoHeight || canvas.height;
+    const ctx = exportCanvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, exportCanvas.width, exportCanvas.height);
+    ctx.drawImage(canvas, 0, 0, exportCanvas.width, exportCanvas.height);
+
+    const dataUrl = exportCanvas.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `${activeClipName}_Frame_${currentTime.toFixed(2)}s.png`;
+    a.click();
   };
 
   const setupCanvasInteraction = (
@@ -605,7 +626,7 @@ export default function App() {
         className="hidden" 
       />
 
-      {/* Top Header */}
+      {/* Header */}
       <header className="relative flex items-center justify-between px-6 py-2.5 bg-[#181818] border-b border-[#282828] z-30">
         <div className="flex items-center gap-4 z-10">
           <img 
@@ -618,7 +639,6 @@ export default function App() {
           <span className="text-xs font-mono font-bold tracking-widest text-[#009456]">+ONE</span>
         </div>
 
-        {/* Centred Mode Switchers */}
         <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 z-20">
           <button
             onClick={() => setPrimaryMode("capture")}
@@ -661,7 +681,7 @@ export default function App() {
 
       {/* Main View Area */}
       <div className="relative flex flex-1 overflow-hidden">
-        {/* Recordings Drawer */}
+        {/* Drawer */}
         <div
           className={`absolute left-0 top-0 bottom-0 w-84 bg-[#161616] border-r border-[#282828] z-40 transition-transform duration-300 flex flex-col ${
             drawerOpen ? "translate-x-0" : "-translate-x-full"
@@ -787,7 +807,6 @@ export default function App() {
             </div>
           ) : (
             <div className="relative w-full h-full flex">
-              {/* Screen A */}
               <div ref={containerARef} className="relative flex-1 h-full flex items-center justify-center bg-black">
                 <video
                   ref={videoARef}
@@ -818,7 +837,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Screen B (Dual View) */}
               {dualMode && (
                 <div ref={containerBRef} className="relative flex-1 h-full border-l border-[#282828] flex items-center justify-center bg-black">
                   <video
@@ -852,7 +870,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Settings Modal (Fixed CSS overrides) */}
+      {/* Settings Modal */}
       {settingsOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-50">
           <div className="bg-[#1c1c1c] border border-[#2e2e2e] rounded-lg w-96 p-5 flex flex-col gap-4 shadow-2xl">
@@ -870,20 +888,18 @@ export default function App() {
                 <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
                   Active Video Capture Device
                 </label>
-                <div className="relative">
-                  <select
-                    value={selectedDeviceId}
-                    onChange={(e) => setSelectedDeviceId(e.target.value)}
-                    style={{ WebkitAppearance: "none", appearance: "none" }}
-                    className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-2 text-xs text-white outline-none cursor-pointer"
-                  >
-                    {availableDevices.map((d) => (
-                      <option key={d.deviceId} value={d.deviceId} className="bg-[#181818] text-white">
-                        {d.label || `Camera ${d.deviceId.slice(0, 5)}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <select
+                  value={selectedDeviceId}
+                  onChange={(e) => setSelectedDeviceId(e.target.value)}
+                  style={{ WebkitAppearance: "none", appearance: "none" }}
+                  className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-2 text-xs text-white outline-none cursor-pointer"
+                >
+                  {availableDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId} className="bg-[#181818] text-white">
+                      {d.label || `Camera ${d.deviceId.slice(0, 5)}`}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
@@ -900,6 +916,19 @@ export default function App() {
                   <option value="120" className="bg-[#181818] text-white">120 FPS (High Speed Running)</option>
                   <option value="30" className="bg-[#181818] text-white">30 FPS (Low Latency)</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                  Storage Directory
+                </label>
+                <input
+                  type="text"
+                  value={storagePath}
+                  onChange={(e) => setStoragePath(e.target.value)}
+                  className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-1.5 text-xs text-white outline-none"
+                  placeholder="C:\PeakPodiatry\Captures"
+                />
               </div>
 
               <div>
@@ -1107,8 +1136,16 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Trimming & Actions */}
+              {/* Actions & Export */}
               <div className="flex items-center gap-2">
+                <button
+                  onClick={exportSnapshot}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
+                  title="Export Still with Measurements (PNG)"
+                >
+                  <SnapshotIcon className="w-3.5 h-3.5 text-[#009456]" /> Still
+                </button>
+
                 <button
                   onClick={() => setTrimIn(currentTime)}
                   className={`px-2 py-1 rounded text-[10px] font-mono border cursor-pointer ${
