@@ -574,7 +574,7 @@ export default function App() {
 
     const notes = [...annotationsA, ...annotationsB]
       .filter((a) => a.type === "text" && a.text)
-      .map((a, i) => `Note: ${a.text}`)
+      .map((a) => `Note: ${a.text}`)
       .join("\n");
 
     const subject = encodeURIComponent(`Peak Podiatry Gait Report - ${activeClipName}`);
