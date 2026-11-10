@@ -1,3 +1,5 @@
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { 
@@ -127,6 +129,28 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 export default function App() {
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const update = await checkUpdate();
+      if (update?.available) {
+        showToast(`Downloading update v${update.version}...`);
+        await update.downloadAndInstall();
+        showToast("Update installed! Relaunching...");
+        await relaunch();
+      } else {
+        showToast("App is up to date (latest version).");
+      }
+    } catch (err: any) {
+      console.error(err);
+      showToast(`Update check failed: ${err}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
   const [activeTool, setActiveTool] = useState<Tool>("arrow");
   
@@ -879,6 +903,16 @@ export default function App() {
             title="Import an existing video from disk"
           >
             <UploadCloud className="w-3.5 h-3.5 text-[#009456]" /> Import Video
+          </button>
+
+          <button
+            onClick={handleCheckUpdate}
+            disabled={checkingUpdate}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
+            title="Check for software updates from GitHub"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-[#009456] ${checkingUpdate ? "animate-spin" : ""}`} />
+            {checkingUpdate ? "Checking..." : "Update"}
           </button>
 
           <button
