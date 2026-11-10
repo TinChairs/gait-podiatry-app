@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local capture output artifacts
+src-tauri/C:*
+*.png
+*.mp4
+*.webm
