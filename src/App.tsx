@@ -1,7 +1,7 @@
-import { check as checkUpdate } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { 
   Camera, 
   Compass, 
@@ -27,7 +27,8 @@ import {
   X,
   Camera as SnapshotIcon,
   Download,
-  ExternalLink
+  ExternalLink,
+  Grid
 } from "lucide-react";
 
 type PrimaryMode = "capture" | "analysis";
@@ -129,36 +130,15 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 export default function App() {
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-
-  const handleCheckUpdate = async () => {
-    setCheckingUpdate(true);
-    try {
-      const update = await checkUpdate();
-      if (update?.available) {
-        showToast(`Downloading update v${update.version}...`);
-        await update.downloadAndInstall();
-        showToast("Update installed! Relaunching...");
-        await relaunch();
-      } else {
-        showToast("App is up to date (latest version).");
-      }
-    } catch (err: any) {
-      console.error(err);
-      showToast(`Update check failed: ${err}`);
-    } finally {
-      setCheckingUpdate(false);
-    }
-  };
-
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
-  const [activeTool, setActiveTool] = useState<Tool>("arrow");
+  const [activeTool, setActiveTool] = useState<Tool>("angle");
+  const [showPlumbGrid, setShowPlumbGrid] = useState(false);
   
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [namingPrefix, setNamingPrefix] = useState("Trial");
+  const [namingPrefix, setNamingPrefix] = useState("Patient_Trial");
   const [preferredFrameRate, setPreferredFrameRate] = useState("60");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   
-  // Standard Public directories accessible on all Windows clinic workstations
   const [videoStoragePath, setVideoStoragePath] = useState("C:\\Users\\Public\\Videos\\GaitVideos");
   const [stillsStoragePath, setStillsStoragePath] = useState("C:\\Users\\Public\\Pictures\\GaitStills");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -184,6 +164,24 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [syncOffset, setSyncOffset] = useState(0);
+
+  // Background Auto-Update on Application Startup
+  useEffect(() => {
+    const runSilentUpdate = async () => {
+      try {
+        const update = await checkUpdate();
+        if (update?.available) {
+          showToast(`Updating to v${update.version}...`);
+          await update.downloadAndInstall();
+          await relaunch();
+        }
+      } catch (err) {
+        // Log in background; avoid disrupting active clinical workflow
+        console.warn("Silent background update check:", err);
+      }
+    };
+    runSilentUpdate();
+  }, []);
 
   const [annotationsA, setAnnotationsA] = useState<Annotation[]>([]);
   const [annotationsB, setAnnotationsB] = useState<Annotation[]>([]);
@@ -219,6 +217,25 @@ export default function App() {
       showToast(`Opened ${folder} in File Explorer`);
     } catch (err: any) {
       alert(`Could not launch File Explorer: ${err}`);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const update = await checkUpdate();
+      if (update?.available) {
+        showToast(`Downloading update v${update.version}...`);
+        await update.downloadAndInstall();
+        showToast("Update installed successfully. Relaunching application...");
+        await relaunch();
+      } else {
+        showToast("Application is on the latest version.");
+      }
+    } catch (err: any) {
+      showToast(`Update check failed: ${err}`);
+    } finally {
+      setCheckingUpdate(false);
     }
   };
 
@@ -363,7 +380,6 @@ export default function App() {
           diskSaved = true;
         } catch (err) {
           console.error("Save to disk failed:", err);
-          // Fallback browser download if outside Tauri runtime
           const dl = document.createElement("a");
           dl.href = url;
           dl.download = filename;
@@ -385,6 +401,9 @@ export default function App() {
         setRecordings((prev) => [newRec, ...prev]);
         setActiveClipA(url);
         setActiveClipName(newRec.name);
+        
+        // Always reset to single-screen view on new capture completion
+        setDualMode(false);
         setPrimaryMode("analysis");
         setAnnotationsA([]);
         setAnnotationsB([]);
@@ -425,6 +444,7 @@ export default function App() {
     setRecordings((prev) => [newRec, ...prev]);
     setActiveClipA(url);
     setActiveClipName(cleanName);
+    setDualMode(false);
     setPrimaryMode("analysis");
     setAnnotationsA([]);
     setAnnotationsB([]);
@@ -514,7 +534,6 @@ export default function App() {
     if (videoBRef.current) videoBRef.current.playbackRate = rate;
   };
 
-  // Export Still: Works for single or combined dual-view with measurements
   const exportSnapshot = async () => {
     if (!videoARef.current || !canvasARef.current) return;
 
@@ -683,6 +702,26 @@ export default function App() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Optional Plumbline Reference Grid
+    if (showPlumbGrid) {
+      ctx.strokeStyle = "rgba(0, 148, 86, 0.25)";
+      ctx.lineWidth = 1;
+      const step = 80;
+      for (let x = step; x < canvas.width; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      // Central vertical plumb reference
+      ctx.strokeStyle = "rgba(0, 230, 118, 0.5)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2, 0);
+      ctx.lineTo(canvas.width / 2, canvas.height);
+      ctx.stroke();
+    }
+
     const renderPath = (pts: Point[], stroke = PEAK_GREEN, lineW = 3, dashed = false) => {
       if (pts.length < 2) return;
       ctx.beginPath();
@@ -790,15 +829,14 @@ export default function App() {
 
   useEffect(() => {
     renderCanvas(canvasARef.current, annotationsA, currentPointsA, mousePosA);
-  }, [annotationsA, currentPointsA, mousePosA, activeTool]);
+  }, [annotationsA, currentPointsA, mousePosA, activeTool, showPlumbGrid]);
 
   useEffect(() => {
     if (dualMode) {
       renderCanvas(canvasBRef.current, annotationsB, currentPointsB, mousePosB);
     }
-  }, [annotationsB, currentPointsB, mousePosB, activeTool, dualMode]);
+  }, [annotationsB, currentPointsB, mousePosB, activeTool, dualMode, showPlumbGrid]);
 
-  // Report: Copies summary, saves still, opens Outlook draft, and reveals Folder in Explorer
   const sendEmailReport = async () => {
     const angleList = [...annotationsA, ...annotationsB]
       .filter((a) => a.type === "angle" && a.angleValue !== undefined)
@@ -831,12 +869,11 @@ export default function App() {
     anchor.href = mailtoUri;
     anchor.click();
 
-    // Launch File Explorer pointing to Stills so practitioner can drag into email immediately
     try {
       await invoke("open_in_explorer", { folderPath: stillsStoragePath });
     } catch {}
 
-    showToast("Report text copied. File Explorer opened to drag files into email.");
+    showToast("Report copied to clipboard. Stills folder opened in Explorer.");
   };
 
   return (
@@ -849,20 +886,19 @@ export default function App() {
         className="hidden" 
       />
 
-      {/* Header */}
-      <header className="relative flex items-center justify-between px-6 py-2.5 bg-[#181818] border-b border-[#282828] z-30">
+      {/* Header - Distinct Branding Lockup */}
+      <header className="relative flex items-center justify-between px-6 py-2 bg-[#161616] border-b border-[#262626] z-30">
         <div className="flex items-center gap-3.5 z-10">
           <img 
             src="/peak-logo.png" 
-            onError={(e) => { (e.target as HTMLImageElement).src = "/logo.svg"; }}
             alt="Peak Podiatry" 
-            className="h-8 w-auto object-contain [image-rendering:crisp-edges]"
+            className="h-7 w-auto object-contain [image-rendering:crisp-edges]" 
           />
           <div className="h-5 w-[1px] bg-gray-700" />
           <img 
             src="/plus-one-logo.png" 
             alt="+One" 
-            className="h-9 w-9 object-contain rounded-full shadow-sm"
+            className="h-7 w-auto object-contain [image-rendering:crisp-edges]" 
           />
         </div>
 
@@ -888,13 +924,13 @@ export default function App() {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 z-10">
+        <div className="flex items-center gap-2.5 z-10">
           <button
             onClick={() => handleOpenFolder(videoStoragePath)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
-            title="Open Video Folder in Windows Explorer"
+            title="Open Video Folder in File Explorer"
           >
-            <FolderOpen className="w-3.5 h-3.5 text-[#009456]" /> Open Videos Folder
+            <FolderOpen className="w-3.5 h-3.5 text-[#009456]" /> Videos
           </button>
 
           <button
@@ -902,7 +938,7 @@ export default function App() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
             title="Import an existing video from disk"
           >
-            <UploadCloud className="w-3.5 h-3.5 text-[#009456]" /> Import Video
+            <UploadCloud className="w-3.5 h-3.5 text-[#009456]" /> Import
           </button>
 
           <button
@@ -924,9 +960,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main View Area */}
+      {/* Main Viewport Container */}
       <div className="relative flex flex-1 overflow-hidden">
-        {/* Drawer - Remains Open After Selecting Viewports */}
+        {/* Drawer */}
         <div
           className={`absolute left-0 top-0 bottom-0 w-84 bg-[#161616] border-r border-[#282828] z-40 transition-transform duration-300 flex flex-col ${
             drawerOpen ? "translate-x-0" : "-translate-x-full"
@@ -1006,7 +1042,6 @@ export default function App() {
                   <div className="flex items-center justify-between pt-1 border-t border-gray-800/60">
                     <span className="text-[10px] text-gray-500 font-mono">{rec.timestamp.toLocaleTimeString("en-GB")}</span>
                     
-                    {/* Explicit Left & Right Screen Assignment */}
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => {
@@ -1018,7 +1053,6 @@ export default function App() {
                           showToast(`Loaded "${rec.name}" to Left screen`);
                         }}
                         className="px-2.5 py-1 rounded bg-[#2b2b2b] hover:bg-[#009456] text-gray-200 hover:text-white text-[11px] font-bold cursor-pointer transition"
-                        title="Load into Left Viewport"
                       >
                         Left
                       </button>
@@ -1032,7 +1066,6 @@ export default function App() {
                           showToast(`Loaded "${rec.name}" to Right screen`);
                         }}
                         className="px-2.5 py-1 rounded bg-[#2b2b2b] hover:bg-[#009456] text-gray-200 hover:text-white text-[11px] font-bold cursor-pointer transition"
-                        title="Load into Right Viewport"
                       >
                         Right
                       </button>
@@ -1248,7 +1281,7 @@ export default function App() {
                   value={namingPrefix}
                   onChange={(e) => setNamingPrefix(e.target.value)}
                   className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-1.5 text-xs text-white outline-none"
-                  placeholder="Trial"
+                  placeholder="Patient_Trial"
                 />
               </div>
             </div>
@@ -1271,34 +1304,34 @@ export default function App() {
       {/* Footer Controls */}
       <footer className="px-6 py-3 bg-[#181818] border-t border-[#282828] z-30">
         {primaryMode === "capture" ? (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          /* Perfectly Centered Capture Controls */
+          <div className="relative flex items-center justify-between w-full">
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="p-2 rounded bg-[#222222] hover:bg-[#2c2c2c] text-gray-300 hover:text-white border border-[#333333] cursor-pointer"
+              title="Lab & Camera Settings"
+            >
+              <Settings className="w-4 h-4 text-[#009456]" />
+            </button>
+
+            <div className="absolute left-1/2 -translate-x-1/2">
               <button
-                onClick={() => setSettingsOpen(true)}
-                className="p-2 rounded bg-[#222222] hover:bg-[#2c2c2c] text-gray-300 hover:text-white border border-[#333333] cursor-pointer"
-                title="Lab & Camera Settings"
+                onClick={toggleRecording}
+                className={`flex items-center gap-2 px-10 py-2.5 rounded font-bold text-xs uppercase tracking-wider transition cursor-pointer shadow-lg ${
+                  isRecording ? "bg-red-600 hover:bg-red-700 text-white" : "bg-[#009456] hover:bg-[#007a46] text-white"
+                }`}
               >
-                <Settings className="w-4 h-4 text-[#009456]" />
+                {isRecording ? <Square className="w-4 h-4 fill-white" /> : <Camera className="w-4 h-4" />}
+                {isRecording ? "Stop & Analyse" : "Start Capture"}
               </button>
-              <span className="text-xs text-gray-500 font-mono">
-                Controls: <kbd className="px-2 py-0.5 bg-[#252525] border border-gray-700 rounded text-gray-300">SPACE</kbd> Record/Stop
-              </span>
             </div>
 
-            <button
-              onClick={toggleRecording}
-              className={`flex items-center gap-2 px-8 py-2.5 rounded font-bold text-xs uppercase tracking-wider transition cursor-pointer ${
-                isRecording ? "bg-red-600 hover:bg-red-700 text-white" : "bg-[#009456] hover:bg-[#007a46] text-white"
-              }`}
-            >
-              {isRecording ? <Square className="w-4 h-4 fill-white" /> : <Camera className="w-4 h-4" />}
-              {isRecording ? "Stop & Analyse" : "Start Capture"}
-            </button>
-            <div className="w-48" />
+            <div className="w-10" />
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
-            {/* Scrubber */}
+          /* Analysis Control Layout */
+          <div className="flex flex-col gap-2.5">
+            {/* Timeline Scrubber */}
             <div className="relative flex items-center gap-4 w-full">
               <span className="text-xs font-mono text-gray-400 w-14">{currentTime.toFixed(2)}s</span>
               
@@ -1317,7 +1350,9 @@ export default function App() {
               <span className="text-xs font-mono text-gray-400 w-14 text-right">{duration.toFixed(2)}s</span>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
+            {/* Bottom 3-Zone Toolbar */}
+            <div className="relative flex items-center justify-between w-full">
+              {/* Zone 1 (Left): Settings Cog & Measurement Toolset */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setSettingsOpen(true)}
@@ -1329,25 +1364,25 @@ export default function App() {
 
                 <div className="flex items-center gap-1 bg-[#202020] p-1 rounded border border-[#2e2e2e]">
                   <button
+                    onClick={() => setActiveTool("angle")}
+                    className={`p-1.5 rounded cursor-pointer ${activeTool === "angle" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
+                    title="Protractor Angle (Default)"
+                  >
+                    <Compass className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => setActiveTool("arrow")}
                     className={`p-1.5 rounded cursor-pointer ${activeTool === "arrow" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Directed Arrow"
+                    title="Directed Vector Arrow"
                   >
                     <MoveUpRight className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setActiveTool("line")}
                     className={`p-1.5 rounded cursor-pointer ${activeTool === "line" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Straight Line"
+                    title="Straight Reference Line"
                   >
                     <Minus className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setActiveTool("angle")}
-                    className={`p-1.5 rounded cursor-pointer ${activeTool === "angle" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Protractor Angle"
-                  >
-                    <Compass className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setActiveTool("freehand")}
@@ -1359,9 +1394,16 @@ export default function App() {
                   <button
                     onClick={() => setActiveTool("text")}
                     className={`p-1.5 rounded cursor-pointer ${activeTool === "text" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Text Note"
+                    title="Clinical Text Observation"
                   >
                     <Type className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setShowPlumbGrid(!showPlumbGrid)}
+                    className={`p-1.5 rounded cursor-pointer ${showPlumbGrid ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
+                    title="Toggle True Vertical Plumb Line Grid"
+                  >
+                    <Grid className="w-4 h-4" />
                   </button>
                   <button
                     onClick={handleUndo}
@@ -1376,56 +1418,67 @@ export default function App() {
                       setAnnotationsB([]);
                     }}
                     className="p-1.5 rounded text-gray-500 hover:text-red-400 cursor-pointer ml-1"
-                    title="Clear Annotations"
+                    title="Clear All Annotations"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+
+                {/* Trial Title Input */}
+                <div className="flex items-center gap-2 bg-[#202020] px-3 py-1 rounded border border-[#2e2e2e] ml-1">
+                  <span className="text-[10px] text-gray-500 uppercase font-mono">TRIAL:</span>
+                  {isRenamingActive ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={activeClipName}
+                        onChange={(e) => setActiveClipName(e.target.value)}
+                        className="bg-[#121212] text-xs px-2 py-0.5 rounded border border-[#009456] text-white outline-none"
+                      />
+                      <button onClick={() => setIsRenamingActive(false)} className="text-[#009456] cursor-pointer">
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setIsRenamingActive(true)}>
+                      <span className="text-xs font-bold text-gray-200">{activeClipName}</span>
+                      <Edit2 className="w-3 h-3 text-gray-500 hover:text-white" />
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Active Trial Name */}
-              <div className="flex items-center gap-2 bg-[#202020] px-3 py-1 rounded border border-[#2e2e2e]">
-                <span className="text-[10px] text-gray-500 uppercase font-mono">TRIAL:</span>
-                {isRenamingActive ? (
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="text"
-                      value={activeClipName}
-                      onChange={(e) => setActiveClipName(e.target.value)}
-                      className="bg-[#121212] text-xs px-2 py-0.5 rounded border border-[#009456] text-white outline-none"
-                    />
-                    <button onClick={() => setIsRenamingActive(false)} className="text-[#009456] cursor-pointer">
-                      <Check className="w-3.5 h-3.5" />
+              {/* Zone 2 (Centre): Play/Pause Focus */}
+              <div className="absolute left-1/2 -translate-x-1/2">
+                <button
+                  onClick={togglePlayback}
+                  className="px-6 py-2 rounded bg-[#009456] text-white font-bold text-xs flex items-center gap-2 cursor-pointer hover:bg-[#007a46] shadow-md transition"
+                >
+                  {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white" />}
+                  {isPlaying ? "Pause" : "Play"}
+                </button>
+              </div>
+
+              {/* Zone 3 (Right): Speeds, Stills, Report, and Dual View */}
+              <div className="flex items-center gap-2.5">
+                {/* Playback Speeds */}
+                <div className="flex items-center gap-1 bg-[#202020] p-1 rounded border border-[#2e2e2e]">
+                  {[0.25, 0.5, 1.0].map((rate) => (
+                    <button
+                      key={rate}
+                      onClick={() => handleSpeedChange(rate)}
+                      className={`px-2.5 py-1 rounded text-[11px] font-mono cursor-pointer transition ${
+                        playbackRate === rate ? "bg-[#009456] text-white font-bold" : "text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      {rate}x
                     </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setIsRenamingActive(true)}>
-                    <span className="text-xs font-bold text-gray-200">{activeClipName}</span>
-                    <Edit2 className="w-3 h-3 text-gray-500 hover:text-white" />
-                  </div>
-                )}
-              </div>
+                  ))}
+                </div>
 
-              {/* Playback Speeds */}
-              <div className="flex items-center gap-1 bg-[#202020] p-1 rounded border border-[#2e2e2e]">
-                {[0.25, 0.5, 1.0].map((rate) => (
-                  <button
-                    key={rate}
-                    onClick={() => handleSpeedChange(rate)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono cursor-pointer ${
-                      playbackRate === rate ? "bg-[#009456] text-white font-bold" : "text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    {rate}x
-                  </button>
-                ))}
-              </div>
-
-              {/* Action Toolbar */}
-              <div className="flex items-center gap-2">
                 <button
                   onClick={exportSnapshot}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
                   title="Capture Still with Measurements (Captures Dual View if active)"
                 >
                   <SnapshotIcon className="w-3.5 h-3.5 text-[#009456]" /> Still
@@ -1434,7 +1487,7 @@ export default function App() {
                 <button
                   onClick={sendEmailReport}
                   className="flex items-center gap-1 px-3 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
-                  title="Copy Report to Clipboard, Save Still, and Open Stills in File Explorer"
+                  title="Copy Report to Clipboard, Save Still, and Open Stills Folder"
                 >
                   <Mail className="w-3.5 h-3.5 text-[#009456]" /> Report
                 </button>
@@ -1454,14 +1507,6 @@ export default function App() {
                   <Columns className="w-3.5 h-3.5" /> Dual View
                 </button>
 
-                <button
-                  onClick={togglePlayback}
-                  className="px-4 py-1.5 rounded bg-[#009456] text-white font-bold text-xs flex items-center gap-1 cursor-pointer hover:bg-[#007a46]"
-                >
-                  {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                  {isPlaying ? "Pause" : "Play"}
-                </button>
-
                 {dualMode && (
                   <div className="flex items-center gap-2 bg-[#202020] px-3 py-1 rounded border border-[#2e2e2e]">
                     <span 
@@ -1469,7 +1514,7 @@ export default function App() {
                       title="Double-click to reset"
                       className="text-[10px] uppercase font-bold text-gray-400 cursor-pointer hover:text-white"
                     >
-                      Gait Sync (0s):
+                      Sync:
                     </span>
                     <input
                       type="range"
@@ -1498,14 +1543,14 @@ export default function App() {
         )}
       </footer>
 
-      {/* Clickable Floating Alert Toast with Direct File Explorer Link */}
+      {/* Floating Clickable Alert Toast */}
       {toastMessage && (
         <div 
           onClick={() => {
             const folder = toastMessage.includes("Still") ? stillsStoragePath : videoStoragePath;
             handleOpenFolder(folder);
           }}
-          title="Click to reveal folder in Windows File Explorer"
+          title="Click to reveal folder in File Explorer"
           className="fixed bottom-16 right-6 bg-[#1a1a1a] hover:bg-[#252525] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-2xl z-50 flex items-center gap-2.5 cursor-pointer transition select-none"
         >
           <div className="w-2 h-2 rounded-full bg-[#009456]" />
