@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { 
   Camera, 
   Compass, 
@@ -17,14 +17,15 @@ import {
   Check, 
   VideoOff, 
   RefreshCw, 
-  Scissors, 
   Mail, 
   Undo2,
   Settings,
   UploadCloud,
   FolderOpen,
   X,
-  Camera as SnapshotIcon
+  Camera as SnapshotIcon,
+  Download,
+  ExternalLink
 } from "lucide-react";
 
 type PrimaryMode = "capture" | "analysis";
@@ -47,47 +48,108 @@ interface SavedRecording {
   id: string;
   name: string;
   url: string;
+  blob?: Blob;
+  diskPath?: string;
   timestamp: Date;
 }
 
 const PEAK_GREEN = "#009456";
+const DB_NAME = "PeakPodiatryGaitDB";
+const STORE_NAME = "recordings";
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function persistRecording(id: string, name: string, blob: Blob, diskPath: string, timestamp: Date) {
+  const db = await openDB();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    store.put({ id, name, blob, diskPath, timestamp: timestamp.toISOString() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function fetchPersistedRecordings(): Promise<SavedRecording[]> {
+  const db = await openDB();
+  return new Promise<SavedRecording[]>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const records = request.result.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        blob: item.blob,
+        diskPath: item.diskPath,
+        url: URL.createObjectURL(item.blob),
+        timestamp: new Date(item.timestamp),
+      }));
+      resolve(records.reverse());
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function deletePersistedRecording(id: string) {
+  const db = await openDB();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(",") ? result.split(",")[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 export default function App() {
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [dragOverA, setDragOverA] = useState(false);
-  const [dragOverB, setDragOverB] = useState(false);
-
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
   const [activeTool, setActiveTool] = useState<Tool>("arrow");
   
-  // Settings State
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [namingPrefix, setNamingPrefix] = useState("Trial");
   const [preferredFrameRate, setPreferredFrameRate] = useState("60");
-  const [storagePath, setStoragePath] = useState("C:\\Users\\Public\\Videos\\GaitVideos");
+  
+  // Standard Public directories accessible on all Windows clinic workstations
   const [videoStoragePath, setVideoStoragePath] = useState("C:\\Users\\Public\\Videos\\GaitVideos");
   const [stillsStoragePath, setStillsStoragePath] = useState("C:\\Users\\Public\\Pictures\\GaitStills");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const handleBrowseDirectory = () => {
-    if (folderInputRef.current) {
-      folderInputRef.current.click();
-    }
-  };
-
-  // Drawer & Files
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [recordings, setRecordings] = useState<SavedRecording[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
 
-  // Video Devices
   const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraErrorMsg, setCameraErrorMsg] = useState<string | null>(null);
 
-  // Playback & Dual State
   const [activeClipA, setActiveClipA] = useState<string | null>(null);
   const [activeClipB, setActiveClipB] = useState<string | null>(null);
   const [activeClipName, setActiveClipName] = useState<string>("Trial_01");
@@ -99,11 +161,6 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [syncOffset, setSyncOffset] = useState(0);
 
-  // Trimming
-  const [trimIn, setTrimIn] = useState<number | null>(null);
-  const [trimOut, setTrimOut] = useState<number | null>(null);
-
-  // Canvas Annotations
   const [annotationsA, setAnnotationsA] = useState<Annotation[]>([]);
   const [annotationsB, setAnnotationsB] = useState<Annotation[]>([]);
   const [currentPointsA, setCurrentPointsA] = useState<Point[]>([]);
@@ -113,9 +170,7 @@ export default function App() {
   const [isMouseDownA, setIsMouseDownA] = useState(false);
   const [isMouseDownB, setIsMouseDownB] = useState(false);
 
-  // References
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const videoLiveRef = useRef<HTMLVideoElement | null>(null);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
@@ -126,6 +181,32 @@ export default function App() {
   const containerARef = useRef<HTMLDivElement | null>(null);
   const canvasBRef = useRef<HTMLCanvasElement | null>(null);
   const containerBRef = useRef<HTMLDivElement | null>(null);
+
+  const isSeekingRef = useRef(false);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 5000);
+  };
+
+  const handleOpenFolder = async (folder: string) => {
+    try {
+      await invoke("open_in_explorer", { folderPath: folder });
+      showToast(`Opened ${folder} in File Explorer`);
+    } catch (err: any) {
+      alert(`Could not launch File Explorer: ${err}`);
+    }
+  };
+
+  useEffect(() => {
+    fetchPersistedRecordings().then((saved) => {
+      setRecordings(saved);
+      if (saved.length > 0) {
+        setActiveClipA(saved[0].url);
+        setActiveClipName(saved[0].name);
+      }
+    });
+  }, []);
 
   const syncCanvasDimensions = useCallback(() => {
     if (canvasARef.current && containerARef.current) {
@@ -176,7 +257,7 @@ export default function App() {
       setCameraActive(true);
     } catch {
       setCameraActive(false);
-      setCameraErrorMsg("No camera detected. Connect capture card/webcam and select from dropdown.");
+      setCameraErrorMsg("No camera detected. Connect capture card/webcam and select from settings.");
     }
   }, [selectedDeviceId]);
 
@@ -215,10 +296,6 @@ export default function App() {
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
         stepFrames(1);
-      } else if (e.key === "[") {
-        setTrimIn(currentTime);
-      } else if (e.key === "]") {
-        setTrimOut(currentTime);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -231,7 +308,7 @@ export default function App() {
       const stream = videoLiveRef.current.srcObject as MediaStream;
       recordedChunksRef.current = [];
       
-      const mime = ["video/webm", "video/webm;codecs=vp8", "video/mp4"].find((m) =>
+      const mime = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp8", "video/webm"].find((m) =>
         MediaRecorder.isTypeSupported(m)
       ) || "";
 
@@ -241,28 +318,54 @@ export default function App() {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
 
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+      recorder.onstop = async () => {
+        const ext = mime.includes("mp4") ? "mp4" : "webm";
+        const blob = new Blob(recordedChunksRef.current, { type: mime || "video/mp4" });
         const url = URL.createObjectURL(blob);
         const now = new Date();
         const dateStr = now.toISOString().split("T")[0];
         const timeStr = now.toTimeString().split(" ")[0].replace(/:/g, "-");
-        const name = `${namingPrefix}_${dateStr}_${timeStr}`;
+        const filename = `${namingPrefix}_${dateStr}_${timeStr}.${ext}`;
+        const newId = Date.now().toString();
+
+        let diskSaved = false;
+        try {
+          const b64 = await blobToBase64(blob);
+          await invoke("save_file_to_disk", {
+            base64Data: b64,
+            targetDir: videoStoragePath,
+            filename: filename,
+          });
+          diskSaved = true;
+        } catch (err) {
+          console.error("Save to disk failed:", err);
+          // Fallback browser download if outside Tauri runtime
+          const dl = document.createElement("a");
+          dl.href = url;
+          dl.download = filename;
+          dl.click();
+        }
+
+        const fullDiskPath = `${videoStoragePath}\\${filename}`;
+        await persistRecording(newId, filename.replace(/\.[^/.]+$/, ""), blob, fullDiskPath, now);
 
         const newRec: SavedRecording = {
-          id: Date.now().toString(),
-          name,
+          id: newId,
+          name: filename.replace(/\.[^/.]+$/, ""),
           url,
-          timestamp: new Date(),
+          blob,
+          diskPath: fullDiskPath,
+          timestamp: now,
         };
+
         setRecordings((prev) => [newRec, ...prev]);
         setActiveClipA(url);
-        setActiveClipName(name);
+        setActiveClipName(newRec.name);
         setPrimaryMode("analysis");
         setAnnotationsA([]);
         setAnnotationsB([]);
-        setTrimIn(null);
-        setTrimOut(null);
+
+        showToast(diskSaved ? `Saved directly to ${fullDiskPath}` : `Saved ${filename} to Downloads`);
       };
 
       recorder.start();
@@ -276,17 +379,23 @@ export default function App() {
     }
   };
 
-  const handleImportVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const url = URL.createObjectURL(file);
     const cleanName = file.name.replace(/\.[^/.]+$/, "");
+    const newId = Date.now().toString();
+    const now = new Date();
+
+    await persistRecording(newId, cleanName, file, "Imported", now);
+
     const newRec: SavedRecording = {
-      id: Date.now().toString(),
+      id: newId,
       name: cleanName,
       url,
-      timestamp: new Date(),
+      blob: file,
+      timestamp: now,
     };
 
     setRecordings((prev) => [newRec, ...prev]);
@@ -296,14 +405,14 @@ export default function App() {
     setAnnotationsA([]);
     setAnnotationsB([]);
     
-    if (videoARef.current) {
-      videoARef.current.load();
-    }
+    if (videoARef.current) videoARef.current.load();
     setTimeout(syncCanvasDimensions, 100);
+    showToast(`Loaded ${cleanName}`);
   };
 
-  const handleDeleteRecording = (id: string, e: React.MouseEvent) => {
+  const handleDeleteRecording = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    await deletePersistedRecording(id);
     setRecordings((prev) => prev.filter((r) => r.id !== id));
     if (activeClipA && recordings.find((r) => r.id === id)?.url === activeClipA) {
       setActiveClipA(null);
@@ -312,6 +421,7 @@ export default function App() {
       setActiveClipB(null);
       setDualMode(false);
     }
+    showToast("Recording removed from library");
   };
 
   const stepFrames = (frames: number) => {
@@ -327,6 +437,33 @@ export default function App() {
       if (dualMode && videoBRef.current) {
         videoBRef.current.currentTime = Math.max(0, targetTime + syncOffset);
       }
+    }
+  };
+
+  const handleScrubberChange = (val: number) => {
+    setCurrentTime(val);
+    if (!isSeekingRef.current && videoARef.current) {
+      isSeekingRef.current = true;
+      requestAnimationFrame(() => {
+        const vA = videoARef.current;
+        if (vA) {
+          if (typeof (vA as any).fastSeek === "function") {
+            (vA as any).fastSeek(val);
+          } else {
+            vA.currentTime = val;
+          }
+        }
+        const vB = videoBRef.current;
+        if (dualMode && vB) {
+          const targetB = Math.max(0, val + syncOffset);
+          if (typeof (vB as any).fastSeek === "function") {
+            (vB as any).fastSeek(targetB);
+          } else {
+            vB.currentTime = targetB;
+          }
+        }
+        isSeekingRef.current = false;
+      });
     }
   };
 
@@ -353,27 +490,65 @@ export default function App() {
     if (videoBRef.current) videoBRef.current.playbackRate = rate;
   };
 
-  const exportSnapshot = () => {
+  // Export Still: Works for single or combined dual-view with measurements
+  const exportSnapshot = async () => {
     if (!videoARef.current || !canvasARef.current) return;
-    const video = videoARef.current;
-    const canvas = canvasARef.current;
+
+    const vidA = videoARef.current;
+    const canA = canvasARef.current;
 
     const exportCanvas = document.createElement("canvas");
-    exportCanvas.width = video.videoWidth || canvas.width;
-    exportCanvas.height = video.videoHeight || canvas.height;
     const ctx = exportCanvas.getContext("2d");
     if (!ctx) return;
 
-    ctx.drawImage(video, 0, 0, exportCanvas.width, exportCanvas.height);
-    ctx.drawImage(canvas, 0, 0, exportCanvas.width, exportCanvas.height);
+    if (dualMode && videoBRef.current && canvasBRef.current) {
+      const vidB = videoBRef.current;
+      const canB = canvasBRef.current;
+
+      const singleW = vidA.videoWidth || canA.width;
+      const singleH = vidA.videoHeight || canA.height;
+
+      exportCanvas.width = singleW * 2;
+      exportCanvas.height = singleH;
+
+      ctx.drawImage(vidA, 0, 0, singleW, singleH);
+      ctx.drawImage(canA, 0, 0, singleW, singleH);
+
+      ctx.drawImage(vidB, singleW, 0, singleW, singleH);
+      ctx.drawImage(canB, singleW, 0, singleW, singleH);
+
+      ctx.strokeStyle = "#444444";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(singleW, 0);
+      ctx.lineTo(singleW, singleH);
+      ctx.stroke();
+    } else {
+      exportCanvas.width = vidA.videoWidth || canA.width;
+      exportCanvas.height = vidA.videoHeight || canA.height;
+      ctx.drawImage(vidA, 0, 0, exportCanvas.width, exportCanvas.height);
+      ctx.drawImage(canA, 0, 0, exportCanvas.width, exportCanvas.height);
+    }
 
     const dataUrl = exportCanvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `${activeClipName}_Frame_${currentTime.toFixed(2)}s.png`;
-    a.click();
-    setToastMessage("Still saved to Pictures / Downloads in File Explorer");
-    setTimeout(() => setToastMessage(null), 3500);
+    const b64 = dataUrl.split(",")[1];
+    const filename = `${activeClipName}_Still_${currentTime.toFixed(2)}s.png`;
+
+    try {
+      await invoke("save_file_to_disk", {
+        base64Data: b64,
+        targetDir: stillsStoragePath,
+        filename: filename,
+      });
+      showToast(`Still saved directly to ${stillsStoragePath}\\${filename}`);
+    } catch (err) {
+      console.error(err);
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename;
+      a.click();
+      showToast(`Still downloaded to Downloads`);
+    }
   };
 
   const setupCanvasInteraction = (
@@ -599,26 +774,18 @@ export default function App() {
     }
   }, [annotationsB, currentPointsB, mousePosB, activeTool, dualMode]);
 
-  const executeActiveTrim = () => {
-    const start = trimIn !== null ? trimIn : 0;
-    const end = trimOut !== null ? trimOut : duration;
-    alert(`Trim marks saved: ${start.toFixed(2)}s to ${end.toFixed(2)}s for ${activeClipName}`);
-    setTrimIn(null);
-    setTrimOut(null);
-  };
-
-  const sendEmailReport = () => {
+  // Report: Copies summary, saves still, opens Outlook draft, and reveals Folder in Explorer
+  const sendEmailReport = async () => {
     const angleList = [...annotationsA, ...annotationsB]
       .filter((a) => a.type === "angle" && a.angleValue !== undefined)
-      .map((a) => `Angle: ${a.angleValue}°`)
+      .map((a) => `• Angle: ${a.angleValue}°`)
       .join("\n");
 
     const notes = [...annotationsA, ...annotationsB]
       .filter((a) => a.type === "text" && a.text)
-      .map((a) => `Note: ${a.text}`)
+      .map((a) => `• Note: ${a.text}`)
       .join("\n");
 
-    const subject = encodeURIComponent(`Peak Podiatry Gait Report - ${activeClipName}`);
     const bodyContent = `PEAK PODIATRY CLINICAL GAIT REPORT\n` +
       `---------------------------------\n` +
       `Trial: ${activeClipName}\n` +
@@ -626,64 +793,30 @@ export default function App() {
       `Duration: ${duration.toFixed(2)}s\n\n` +
       `MEASUREMENTS:\n` +
       `${angleList || "None recorded."}\n\n` +
-      `OBSERVATIONS:\n` +
+      `CLINICAL OBSERVATIONS:\n` +
       `${notes || "None."}\n\n` +
-      `Exported via Peak Podiatry +One Gait Lab.`;
+      `Files saved to: ${videoStoragePath} and ${stillsStoragePath}\n` +
+      `Recorded via Peak Podiatry +One Gait Lab.`;
 
-    // Construct an .eml draft file allowing direct attachment bundling in Windows
-    const boundary = "----=_NextPart_" + Date.now();
-    let emlContent = `To: \r\n`;
-    emlContent += `Subject: Peak Podiatry Gait Report - ${activeClipName}\r\n`;
-    emlContent += `X-Unsent: 1\r\n`;
-    emlContent += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
-    emlContent += `--${boundary}\r\n`;
-    emlContent += `Content-Type: text/plain; charset=UTF-8\r\n\r\n`;
-    emlContent += bodyContent.replace(/\n/g, "\r\n") + `\r\n\r\n`;
+    await navigator.clipboard.writeText(bodyContent);
+    await exportSnapshot();
 
-    const activeRec = recordings.find((r) => r.url === activeClipA);
-    if (activeRec) {
-      emlContent += `--${boundary}\r\n`;
-      emlContent += `Content-Type: video/mp4; name="${activeClipName}.mp4"\r\n`;
-      emlContent += `Content-Disposition: attachment; filename="${activeClipName}.mp4"\r\n`;
-      emlContent += `Content-Transfer-Encoding: base64\r\n\r\n\r\n`;
-    }
-    emlContent += `--${boundary}--\r\n`;
-
-    const blob = new Blob([emlContent], { type: "message/rfc822" });
-    const emlUrl = URL.createObjectURL(blob);
-    const emlAnchor = document.createElement("a");
-    emlAnchor.href = emlUrl;
-    emlAnchor.download = `Report_${activeClipName}.eml`;
-    emlAnchor.click();
-
-    // Fallback trigger standard mailto for immediate client launch
+    const subject = encodeURIComponent(`Peak Podiatry Gait Report - ${activeClipName}`);
     const mailtoUri = `mailto:?subject=${subject}&body=${encodeURIComponent(bodyContent)}`;
     const anchor = document.createElement("a");
     anchor.href = mailtoUri;
     anchor.click();
 
-    setToastMessage("Report and draft attachment generated");
-    setTimeout(() => setToastMessage(null), 3500);
+    // Launch File Explorer pointing to Stills so practitioner can drag into email immediately
+    try {
+      await invoke("open_in_explorer", { folderPath: stillsStoragePath });
+    } catch {}
+
+    showToast("Report text copied. File Explorer opened to drag files into email.");
   };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#121212] text-gray-100 font-sans select-none overflow-hidden">
-      <input 
-        type="file" 
-        ref={folderInputRef}
-        onChange={(e) => {
-          const files = e.target.files;
-          if (files && files.length > 0) {
-            // Extracts top-level folder name or path
-            const relPath = files[0].webkitRelativePath;
-            const folderName = relPath ? relPath.split('/')[0] : "Selected Folder";
-            setStoragePath(`C:\\PeakPodiatry\\${folderName}`);
-          }
-        }}
-        // @ts-ignore
-        webkitdirectory=""
-        className="hidden" 
-      />
       <input 
         type="file" 
         ref={fileInputRef} 
@@ -733,9 +866,17 @@ export default function App() {
 
         <div className="flex items-center gap-3 z-10">
           <button
+            onClick={() => handleOpenFolder(videoStoragePath)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
+            title="Open Video Folder in Windows Explorer"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-[#009456]" /> Open Videos Folder
+          </button>
+
+          <button
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
-            title="Import an existing video"
+            title="Import an existing video from disk"
           >
             <UploadCloud className="w-3.5 h-3.5 text-[#009456]" /> Import Video
           </button>
@@ -744,25 +885,25 @@ export default function App() {
             onClick={() => setDrawerOpen(!drawerOpen)}
             className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#202020] hover:bg-[#282828] text-xs text-gray-200 border border-[#333333] cursor-pointer"
           >
-            <Folder className="w-3.5 h-3.5 text-[#009456]" /> Recordings ({recordings.length})
+            <Folder className="w-3.5 h-3.5 text-[#009456]" /> Library ({recordings.length})
           </button>
         </div>
       </header>
 
       {/* Main View Area */}
       <div className="relative flex flex-1 overflow-hidden">
-        {/* Drawer */}
+        {/* Drawer - Remains Open After Selecting Viewports */}
         <div
           className={`absolute left-0 top-0 bottom-0 w-84 bg-[#161616] border-r border-[#282828] z-40 transition-transform duration-300 flex flex-col ${
             drawerOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
           <div className="flex items-center justify-between p-4 border-b border-[#282828]">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">Recorded Sessions</h2>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">Captured Trials</h2>
             <div className="flex items-center gap-2">
               <button 
-                onClick={() => fileInputRef.current?.click()} 
-                title="Browse & Import from Disk"
+                onClick={() => handleOpenFolder(videoStoragePath)} 
+                title="Open Saved Videos in File Explorer"
                 className="text-gray-400 hover:text-[#009456] p-1 cursor-pointer"
               >
                 <FolderOpen className="w-4 h-4" />
@@ -770,18 +911,14 @@ export default function App() {
               <button onClick={() => setDrawerOpen(false)} className="text-gray-400 hover:text-white text-xs cursor-pointer">✕</button>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
             {recordings.length === 0 ? (
               <p className="text-xs text-gray-600 text-center py-8">No recordings captured or imported yet.</p>
             ) : (
               recordings.map((rec) => (
                 <div 
                   key={rec.id} 
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData("application/json", JSON.stringify({ url: rec.url, name: rec.name }));
-                  }}
-                  className="p-3 bg-[#202020] hover:bg-[#252525] rounded border border-gray-800 hover:border-[#009456] flex flex-col gap-2 cursor-grab active:cursor-grabbing transition"
+                  className="p-3 bg-[#202020] hover:bg-[#242424] rounded border border-gray-800 flex flex-col gap-2 transition"
                 >
                   <div className="flex items-center justify-between">
                     {editingId === rec.id ? (
@@ -793,7 +930,10 @@ export default function App() {
                           className="w-full bg-[#121212] text-xs px-2 py-0.5 rounded border border-[#009456] text-white"
                         />
                         <button
-                          onClick={() => {
+                          onClick={async () => {
+                            if (rec.blob) {
+                              await persistRecording(rec.id, renameText, rec.blob, rec.diskPath || "", rec.timestamp);
+                            }
                             setRecordings((prev) => prev.map((r) => (r.id === rec.id ? { ...r, name: renameText } : r)));
                             if (activeClipA === rec.url) setActiveClipName(renameText);
                             setEditingId(null);
@@ -807,6 +947,19 @@ export default function App() {
                       <span className="text-xs font-bold text-gray-200 truncate">{rec.name}</span>
                     )}
                     <div className="flex items-center gap-1">
+                      <button 
+                        onClick={() => {
+                          const a = document.createElement("a");
+                          a.href = rec.url;
+                          a.download = `${rec.name}.mp4`;
+                          a.click();
+                          showToast(`Exported ${rec.name}.mp4`);
+                        }} 
+                        className="text-gray-500 hover:text-[#009456] p-1 cursor-pointer"
+                        title="Download/Export File"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
                       <button onClick={() => { setEditingId(rec.id); setRenameText(rec.name); }} className="text-gray-500 hover:text-white p-1 cursor-pointer">
                         <Edit2 className="w-3 h-3" />
                       </button>
@@ -815,10 +968,40 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between pt-1">
-                    <span className="text-[10px] text-gray-500">{rec.timestamp.toLocaleTimeString()}</span>
-                    <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-mono">
-                      <span>Drag to view</span>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-gray-800/60">
+                    <span className="text-[10px] text-gray-500 font-mono">{rec.timestamp.toLocaleTimeString("en-GB")}</span>
+                    
+                    {/* Explicit Left & Right Screen Assignment */}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          setActiveClipA(rec.url);
+                          setActiveClipName(rec.name);
+                          setPrimaryMode("analysis");
+                          if (videoARef.current) videoARef.current.load();
+                          setTimeout(syncCanvasDimensions, 50);
+                          showToast(`Loaded "${rec.name}" to Left screen`);
+                        }}
+                        className="px-2.5 py-1 rounded bg-[#2b2b2b] hover:bg-[#009456] text-gray-200 hover:text-white text-[11px] font-bold cursor-pointer transition"
+                        title="Load into Left Viewport"
+                      >
+                        Left
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveClipB(rec.url);
+                          setDualMode(true);
+                          setPrimaryMode("analysis");
+                          if (videoBRef.current) videoBRef.current.load();
+                          setTimeout(syncCanvasDimensions, 50);
+                          showToast(`Loaded "${rec.name}" to Right screen`);
+                        }}
+                        className="px-2.5 py-1 rounded bg-[#2b2b2b] hover:bg-[#009456] text-gray-200 hover:text-white text-[11px] font-bold cursor-pointer transition"
+                        title="Load into Right Viewport"
+                      >
+                        Right
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -847,7 +1030,7 @@ export default function App() {
               {!cameraActive && (
                 <div className="absolute flex flex-col items-center gap-3 bg-[#1e1e1e] p-6 rounded-lg border border-[#2a2a2a] text-center max-w-md">
                   <VideoOff className="w-8 h-8 text-gray-400" />
-                  <p className="text-xs text-gray-400">{cameraErrorMsg || "Camera stream initializing..."}</p>
+                  <p className="text-xs text-gray-400">{cameraErrorMsg || "Camera feed initializing..."}</p>
                   <button
                     onClick={startCamera}
                     className="flex items-center gap-2 px-4 py-2 bg-[#2a2a2a] hover:bg-[#333333] text-[#009456] text-xs rounded border border-[#009456]/40 font-semibold cursor-pointer"
@@ -859,28 +1042,10 @@ export default function App() {
             </div>
           ) : (
             <div className="relative w-full h-full flex">
+              {/* Screen A */}
               <div 
                 ref={containerARef} 
-                onDragOver={(e) => { e.preventDefault(); setDragOverA(true); }}
-                onDragLeave={() => setDragOverA(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOverA(false);
-                  try {
-                    const data = JSON.parse(e.dataTransfer.getData("application/json"));
-                    if (data && data.url) {
-                      setActiveClipA(data.url);
-                      setActiveClipName(data.name);
-                      setPrimaryMode("analysis");
-                      setDrawerOpen(false);
-                      if (videoARef.current) videoARef.current.load();
-                      setTimeout(syncCanvasDimensions, 50);
-                    }
-                  } catch (err) {}
-                }}
-                className={`relative flex-1 h-full flex items-center justify-center bg-black transition border-2 ${
-                  dragOverA ? "border-[#009456] bg-[#009456]/10" : "border-transparent"
-                }`}
+                className="relative flex-1 h-full flex items-center justify-center bg-black"
               >
                 <video
                   ref={videoARef}
@@ -889,7 +1054,9 @@ export default function App() {
                   muted
                   preload="auto"
                   onTimeUpdate={() => {
-                    if (videoARef.current) setCurrentTime(videoARef.current.currentTime);
+                    if (videoARef.current && !isSeekingRef.current) {
+                      setCurrentTime(videoARef.current.currentTime);
+                    }
                   }}
                   onLoadedMetadata={() => {
                     if (videoARef.current) {
@@ -907,33 +1074,15 @@ export default function App() {
                   className="absolute inset-0 w-full h-full cursor-crosshair z-20"
                 />
                 <div className="absolute top-3 left-3 bg-black/60 px-2 py-0.5 rounded text-[10px] text-gray-400 border border-gray-800">
-                  TRIAL A (PRIMARY)
+                  LEFT (PRIMARY)
                 </div>
               </div>
 
+              {/* Screen B */}
               {dualMode && (
                 <div 
                   ref={containerBRef} 
-                  onDragOver={(e) => { e.preventDefault(); setDragOverB(true); }}
-                  onDragLeave={() => setDragOverB(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragOverB(false);
-                    try {
-                      const data = JSON.parse(e.dataTransfer.getData("application/json"));
-                      if (data && data.url) {
-                        setActiveClipB(data.url);
-                        setDualMode(true);
-                        setPrimaryMode("analysis");
-                        setDrawerOpen(false);
-                        if (videoBRef.current) videoBRef.current.load();
-                        setTimeout(syncCanvasDimensions, 50);
-                      }
-                    } catch (err) {}
-                  }}
-                  className={`relative flex-1 h-full border-l border-[#282828] flex items-center justify-center bg-black transition border-2 ${
-                    dragOverB ? "border-[#009456] bg-[#009456]/10" : "border-transparent"
-                  }`}
+                  className="relative flex-1 h-full border-l border-[#282828] flex items-center justify-center bg-black"
                 >
                   <video
                     ref={videoBRef}
@@ -951,7 +1100,7 @@ export default function App() {
                     className="absolute inset-0 w-full h-full cursor-crosshair z-20"
                   />
                   <div className="absolute top-3 left-3 bg-black/60 px-2 py-0.5 rounded text-[10px] text-gray-400 border border-gray-800">
-                    TRIAL B (COMPARISON)
+                    RIGHT (SPLIT)
                   </div>
                   <button
                     onClick={() => setDualMode(false)}
@@ -972,7 +1121,7 @@ export default function App() {
           <div className="bg-[#1c1c1c] border border-[#2e2e2e] rounded-lg w-96 p-5 flex flex-col gap-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-[#282828] pb-3">
               <h3 className="text-sm font-bold tracking-wide text-gray-200 uppercase flex items-center gap-2">
-                <Settings className="w-4 h-4 text-[#009456]" /> Device & Lab Settings
+                <Settings className="w-4 h-4 text-[#009456]" /> Device & Storage Settings
               </h3>
               <button onClick={() => setSettingsOpen(false)} className="text-gray-400 hover:text-white cursor-pointer">
                 <X className="w-4 h-4" />
@@ -1015,27 +1164,45 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
-                  Storage Directory
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    onClick={handleBrowseDirectory}
-                    value={storagePath}
-                    className="flex-1 bg-[#121212] border border-[#333333] hover:border-[#009456] rounded px-3 py-1.5 text-xs text-white outline-none cursor-pointer truncate"
-                    placeholder="C:\\PeakPodiatry\\Captures"
-                    title="Click to browse folder"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleBrowseDirectory}
-                    className="px-3 py-1.5 bg-[#252525] hover:bg-[#303030] text-xs font-semibold text-gray-200 border border-[#383838] rounded cursor-pointer"
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">
+                    Video Directory (SSD)
+                  </label>
+                  <button 
+                    onClick={() => handleOpenFolder(videoStoragePath)} 
+                    className="text-[11px] text-[#009456] hover:underline flex items-center gap-1 cursor-pointer"
                   >
-                    Browse
+                    <ExternalLink className="w-3 h-3" /> View in Explorer
                   </button>
                 </div>
+                <input
+                  type="text"
+                  value={videoStoragePath}
+                  onChange={(e) => setVideoStoragePath(e.target.value)}
+                  className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-1.5 text-xs text-white outline-none"
+                  placeholder="C:\Users\Public\Videos\GaitVideos"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">
+                    Stills / Pictures Directory (SSD)
+                  </label>
+                  <button 
+                    onClick={() => handleOpenFolder(stillsStoragePath)} 
+                    className="text-[11px] text-[#009456] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <ExternalLink className="w-3 h-3" /> View in Explorer
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={stillsStoragePath}
+                  onChange={(e) => setStillsStoragePath(e.target.value)}
+                  className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-1.5 text-xs text-white outline-none"
+                  placeholder="C:\Users\Public\Pictures\GaitStills"
+                />
               </div>
 
               <div>
@@ -1060,7 +1227,7 @@ export default function App() {
                 }}
                 className="px-4 py-1.5 rounded bg-[#009456] hover:bg-[#007a46] text-white font-bold text-xs cursor-pointer"
               >
-                Save & Apply
+                Save & Close
               </button>
             </div>
           </div>
@@ -1097,43 +1264,20 @@ export default function App() {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
+            {/* Scrubber */}
             <div className="relative flex items-center gap-4 w-full">
               <span className="text-xs font-mono text-gray-400 w-14">{currentTime.toFixed(2)}s</span>
               
-              <div className="relative flex-1 flex items-center">
+              <div className="relative flex-1 flex items-center h-6">
                 <input
                   type="range"
                   min={0}
                   max={duration || 1}
                   step={0.001}
                   value={currentTime}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    if (videoARef.current) {
-                      videoARef.current.currentTime = val;
-                      setCurrentTime(val);
-                    }
-                    if (dualMode && videoBRef.current) {
-                      videoBRef.current.currentTime = Math.max(0, val + syncOffset);
-                    }
-                  }}
-                  className="w-full accent-[#009456] h-1.5 bg-[#252525] rounded cursor-pointer"
+                  onChange={(e) => handleScrubberChange(parseFloat(e.target.value))}
+                  className="w-full accent-[#009456] h-1.5 bg-[#252525] rounded cursor-pointer z-10"
                 />
-
-                {trimIn !== null && duration > 0 && (
-                  <div
-                    style={{ left: `${(trimIn / duration) * 100}%` }}
-                    className="absolute top-1/2 -translate-y-1/2 w-1.5 h-4 bg-yellow-400 rounded-sm pointer-events-none"
-                    title={`Mark-In: ${trimIn.toFixed(2)}s`}
-                  />
-                )}
-                {trimOut !== null && duration > 0 && (
-                  <div
-                    style={{ left: `${(trimOut / duration) * 100}%` }}
-                    className="absolute top-1/2 -translate-y-1/2 w-1.5 h-4 bg-red-400 rounded-sm pointer-events-none"
-                    title={`Mark-Out: ${trimOut.toFixed(2)}s`}
-                  />
-                )}
               </div>
 
               <span className="text-xs font-mono text-gray-400 w-14 text-right">{duration.toFixed(2)}s</span>
@@ -1151,6 +1295,20 @@ export default function App() {
 
                 <div className="flex items-center gap-1 bg-[#202020] p-1 rounded border border-[#2e2e2e]">
                   <button
+                    onClick={() => setActiveTool("arrow")}
+                    className={`p-1.5 rounded cursor-pointer ${activeTool === "arrow" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
+                    title="Directed Arrow"
+                  >
+                    <MoveUpRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setActiveTool("line")}
+                    className={`p-1.5 rounded cursor-pointer ${activeTool === "line" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
+                    title="Straight Line"
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => setActiveTool("angle")}
                     className={`p-1.5 rounded cursor-pointer ${activeTool === "angle" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
                     title="Protractor Angle"
@@ -1158,23 +1316,9 @@ export default function App() {
                     <Compass className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => setActiveTool("line")}
-                    className={`p-1.5 rounded cursor-pointer ${activeTool === "line" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Straight Line (Drag)"
-                  >
-                    <Minus className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setActiveTool("arrow")}
-                    className={`p-1.5 rounded cursor-pointer ${activeTool === "arrow" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Directed Arrow (Drag)"
-                  >
-                    <MoveUpRight className="w-4 h-4" />
-                  </button>
-                  <button
                     onClick={() => setActiveTool("freehand")}
                     className={`p-1.5 rounded cursor-pointer ${activeTool === "freehand" ? "bg-[#009456] text-white" : "text-gray-400 hover:text-white"}`}
-                    title="Freehand Pen (Drag)"
+                    title="Freehand Pen"
                   >
                     <PenTool className="w-4 h-4" />
                   </button>
@@ -1228,7 +1372,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* Speed Controls */}
+              {/* Playback Speeds */}
               <div className="flex items-center gap-1 bg-[#202020] p-1 rounded border border-[#2e2e2e]">
                 {[0.25, 0.5, 1.0].map((rate) => (
                   <button
@@ -1243,47 +1387,20 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Actions & Export */}
+              {/* Action Toolbar */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={exportSnapshot}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
-                  title="Export High-Resolution Still with Measurements (PNG)"
+                  title="Capture Still with Measurements (Captures Dual View if active)"
                 >
                   <SnapshotIcon className="w-3.5 h-3.5 text-[#009456]" /> Still
                 </button>
 
                 <button
-                  onClick={() => setTrimIn(currentTime)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono border cursor-pointer ${
-                    trimIn !== null ? "bg-yellow-400/20 text-yellow-300 border-yellow-400" : "bg-[#252525] text-gray-400 border-gray-700"
-                  }`}
-                  title="Mark In Point ('[' key)"
-                >
-                  Set [In]
-                </button>
-                <button
-                  onClick={() => setTrimOut(currentTime)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono border cursor-pointer ${
-                    trimOut !== null ? "bg-red-400/20 text-red-300 border-red-400" : "bg-[#252525] text-gray-400 border-gray-700"
-                  }`}
-                  title="Mark Out Point (']' key)"
-                >
-                  Set [Out]
-                </button>
-
-                {(trimIn !== null || trimOut !== null) && (
-                  <button
-                    onClick={executeActiveTrim}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#009456] text-white text-xs font-bold hover:bg-[#007a46] cursor-pointer"
-                  >
-                    <Scissors className="w-3 h-3" /> Cut
-                  </button>
-                )}
-
-                <button
                   onClick={sendEmailReport}
                   className="flex items-center gap-1 px-3 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
+                  title="Copy Report to Clipboard, Save Still, and Open Stills in File Explorer"
                 >
                   <Mail className="w-3.5 h-3.5 text-[#009456]" /> Report
                 </button>
@@ -1346,23 +1463,20 @@ export default function App() {
           </div>
         )}
       </footer>
-      {/* Floating Toast Notification */}
+
+      {/* Clickable Floating Alert Toast with Direct File Explorer Link */}
       {toastMessage && (
         <div 
-          onClick={async () => {
-            try {
-              const target = toastMessage.includes("Still") ? stillsStoragePath : videoStoragePath;
-              await invoke("open_in_explorer", { folderPath: target });
-            } catch (err) {
-              console.error(err);
-            }
+          onClick={() => {
+            const folder = toastMessage.includes("Still") ? stillsStoragePath : videoStoragePath;
+            handleOpenFolder(folder);
           }}
-          title="Click to reveal folder in File Explorer"
-          className="fixed bottom-16 right-6 bg-[#1e1e1e] hover:bg-[#252525] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-2xl z-50 flex items-center gap-2 cursor-pointer transition select-none"
+          title="Click to reveal folder in Windows File Explorer"
+          className="fixed bottom-16 right-6 bg-[#1a1a1a] hover:bg-[#252525] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-2xl z-50 flex items-center gap-2.5 cursor-pointer transition select-none"
         >
           <div className="w-2 h-2 rounded-full bg-[#009456]" />
           <span>{toastMessage}</span>
-          <span className="text-[10px] text-gray-400 underline ml-1 font-mono">Open</span>
+          <span className="text-[11px] text-[#009456] underline font-bold ml-1">Open Folder ↗</span>
         </div>
       )}
     </div>
