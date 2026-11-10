@@ -52,6 +52,10 @@ interface SavedRecording {
 const PEAK_GREEN = "#009456";
 
 export default function App() {
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [dragOverA, setDragOverA] = useState(false);
+  const [dragOverB, setDragOverB] = useState(false);
+
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
   const [activeTool, setActiveTool] = useState<Tool>("arrow");
   
@@ -365,6 +369,8 @@ export default function App() {
     a.href = dataUrl;
     a.download = `${activeClipName}_Frame_${currentTime.toFixed(2)}s.png`;
     a.click();
+    setToastMessage("Still saved to Pictures / Downloads in File Explorer");
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   const setupCanvasInteraction = (
@@ -621,10 +627,40 @@ export default function App() {
       `${notes || "None."}\n\n` +
       `Exported via Peak Podiatry +One Gait Lab.`;
 
+    // Construct an .eml draft file allowing direct attachment bundling in Windows
+    const boundary = "----=_NextPart_" + Date.now();
+    let emlContent = `To: \r\n`;
+    emlContent += `Subject: Peak Podiatry Gait Report - ${activeClipName}\r\n`;
+    emlContent += `X-Unsent: 1\r\n`;
+    emlContent += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+    emlContent += `--${boundary}\r\n`;
+    emlContent += `Content-Type: text/plain; charset=UTF-8\r\n\r\n`;
+    emlContent += bodyContent.replace(/\n/g, "\r\n") + `\r\n\r\n`;
+
+    const activeRec = recordings.find((r) => r.url === activeClipA);
+    if (activeRec) {
+      emlContent += `--${boundary}\r\n`;
+      emlContent += `Content-Type: video/mp4; name="${activeClipName}.mp4"\r\n`;
+      emlContent += `Content-Disposition: attachment; filename="${activeClipName}.mp4"\r\n`;
+      emlContent += `Content-Transfer-Encoding: base64\r\n\r\n\r\n`;
+    }
+    emlContent += `--${boundary}--\r\n`;
+
+    const blob = new Blob([emlContent], { type: "message/rfc822" });
+    const emlUrl = URL.createObjectURL(blob);
+    const emlAnchor = document.createElement("a");
+    emlAnchor.href = emlUrl;
+    emlAnchor.download = `Report_${activeClipName}.eml`;
+    emlAnchor.click();
+
+    // Fallback trigger standard mailto for immediate client launch
     const mailtoUri = `mailto:?subject=${subject}&body=${encodeURIComponent(bodyContent)}`;
     const anchor = document.createElement("a");
     anchor.href = mailtoUri;
     anchor.click();
+
+    setToastMessage("Report and draft attachment generated");
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   return (
@@ -736,7 +772,14 @@ export default function App() {
               <p className="text-xs text-gray-600 text-center py-8">No recordings captured or imported yet.</p>
             ) : (
               recordings.map((rec) => (
-                <div key={rec.id} className="p-3 bg-[#202020] rounded border border-gray-800 flex flex-col gap-2">
+                <div 
+                  key={rec.id} 
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("application/json", JSON.stringify({ url: rec.url, name: rec.name }));
+                  }}
+                  className="p-3 bg-[#202020] hover:bg-[#252525] rounded border border-gray-800 hover:border-[#009456] flex flex-col gap-2 cursor-grab active:cursor-grabbing transition"
+                >
                   <div className="flex items-center justify-between">
                     {editingId === rec.id ? (
                       <div className="flex items-center gap-1 flex-1 mr-2">
@@ -771,33 +814,8 @@ export default function App() {
                   </div>
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-[10px] text-gray-500">{rec.timestamp.toLocaleTimeString()}</span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          setActiveClipA(rec.url);
-                          setActiveClipName(rec.name);
-                          setPrimaryMode("analysis");
-                          setDrawerOpen(false);
-                          if (videoARef.current) videoARef.current.load();
-                          setTimeout(syncCanvasDimensions, 50);
-                        }}
-                        className="text-[11px] text-[#009456] hover:underline cursor-pointer font-semibold"
-                      >
-                        Load Primary
-                      </button>
-                      <button
-                        onClick={() => {
-                          setActiveClipB(rec.url);
-                          setDualMode(true);
-                          setPrimaryMode("analysis");
-                          setDrawerOpen(false);
-                          if (videoBRef.current) videoBRef.current.load();
-                          setTimeout(syncCanvasDimensions, 50);
-                        }}
-                        className="text-[11px] text-gray-400 hover:text-white cursor-pointer"
-                      >
-                        + Split View
-                      </button>
+                    <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-mono">
+                      <span>Drag to view</span>
                     </div>
                   </div>
                 </div>
@@ -838,7 +856,29 @@ export default function App() {
             </div>
           ) : (
             <div className="relative w-full h-full flex">
-              <div ref={containerARef} className="relative flex-1 h-full flex items-center justify-center bg-black">
+              <div 
+                ref={containerARef} 
+                onDragOver={(e) => { e.preventDefault(); setDragOverA(true); }}
+                onDragLeave={() => setDragOverA(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOverA(false);
+                  try {
+                    const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                    if (data && data.url) {
+                      setActiveClipA(data.url);
+                      setActiveClipName(data.name);
+                      setPrimaryMode("analysis");
+                      setDrawerOpen(false);
+                      if (videoARef.current) videoARef.current.load();
+                      setTimeout(syncCanvasDimensions, 50);
+                    }
+                  } catch (err) {}
+                }}
+                className={`relative flex-1 h-full flex items-center justify-center bg-black transition border-2 ${
+                  dragOverA ? "border-[#009456] bg-[#009456]/10" : "border-transparent"
+                }`}
+              >
                 <video
                   ref={videoARef}
                   src={activeClipA || ""}
@@ -869,7 +909,29 @@ export default function App() {
               </div>
 
               {dualMode && (
-                <div ref={containerBRef} className="relative flex-1 h-full border-l border-[#282828] flex items-center justify-center bg-black">
+                <div 
+                  ref={containerBRef} 
+                  onDragOver={(e) => { e.preventDefault(); setDragOverB(true); }}
+                  onDragLeave={() => setDragOverB(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverB(false);
+                    try {
+                      const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                      if (data && data.url) {
+                        setActiveClipB(data.url);
+                        setDualMode(true);
+                        setPrimaryMode("analysis");
+                        setDrawerOpen(false);
+                        if (videoBRef.current) videoBRef.current.load();
+                        setTimeout(syncCanvasDimensions, 50);
+                      }
+                    } catch (err) {}
+                  }}
+                  className={`relative flex-1 h-full border-l border-[#282828] flex items-center justify-center bg-black transition border-2 ${
+                    dragOverB ? "border-[#009456] bg-[#009456]/10" : "border-transparent"
+                  }`}
+                >
                   <video
                     ref={videoBRef}
                     src={activeClipB || ""}
@@ -1281,6 +1343,13 @@ export default function App() {
           </div>
         )}
       </footer>
+      {/* Floating Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-16 right-6 bg-[#1f1f1f] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-xl z-50 flex items-center gap-2 animate-fade-in">
+          <div className="w-2 h-2 rounded-full bg-[#009456]" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
     </div>
   );
 }
