@@ -892,13 +892,13 @@ export default function App() {
           <img 
             src="/peak-logo.png" 
             alt="Peak Podiatry" 
-            className="h-7 w-auto object-contain [image-rendering:crisp-edges]" 
+            className="h-7 w-auto object-contain drop-shadow-sm" 
           />
           <div className="h-5 w-[1px] bg-gray-700" />
           <img 
             src="/plus-one-logo.png" 
             alt="+One" 
-            className="h-7 w-auto object-contain [image-rendering:crisp-edges]" 
+            className="h-7 w-auto object-contain drop-shadow-sm" 
           />
         </div>
 

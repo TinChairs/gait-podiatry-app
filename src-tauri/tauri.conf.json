@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "gait-podiatry-app",
-  "version": "0.2.5",
+  "productName": "PlusOne",
+  "version": "0.2.6",
   "identifier": "com.christiankerr.gait-podiatry-app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "gait-podiatry-app",
+        "title": "+One Gait Lab",
         "width": 800,
         "height": 600
       }
@@ -31,14 +31,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4RkNENDBENkExMjA3QkQKUldTOUJ4SnFEZFQ4NktNTGExUllUbXNoMFhPRXZ1K2EvMkZEeEUxSUlHZTQvUXpDVXVRZVdIRDEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ5NENBQTYyODg5MEZDMEIKUldRTC9KQ0lZcXBNMlYvYUhsaVV5NnJEYWNGV3Ewb0tTbjhlYUlma2hscG9TUXAya1ZkSTJqV0EK",
       "endpoints": [
         "https://github.com/TinChairs/gait-podiatry-app/releases/latest/download/latest.json"
       ]
     }
-  }
+  },
+  "mainBinaryName": "PlusOne"
 }
