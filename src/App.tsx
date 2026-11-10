@@ -1,4 +1,3 @@
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Camera, 
