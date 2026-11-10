@@ -1,3 +1,4 @@
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Camera, 
@@ -53,13 +54,19 @@ const PEAK_GREEN = "#009456";
 
 export default function App() {
   const [primaryMode, setPrimaryMode] = useState<PrimaryMode>("capture");
-  const [activeTool, setActiveTool] = useState<Tool>("angle");
+  const [activeTool, setActiveTool] = useState<Tool>("arrow");
   
   // Settings State
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [namingPrefix, setNamingPrefix] = useState("Trial");
   const [preferredFrameRate, setPreferredFrameRate] = useState("60");
   const [storagePath, setStoragePath] = useState("C:\\PeakPodiatry\\Captures");
+
+  const handleBrowseDirectory = () => {
+    if (folderInputRef.current) {
+      folderInputRef.current.click();
+    }
+  };
 
   // Drawer & Files
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -102,6 +109,7 @@ export default function App() {
 
   // References
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const videoLiveRef = useRef<HTMLVideoElement | null>(null);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
@@ -230,7 +238,11 @@ export default function App() {
       recorder.onstop = () => {
         const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
         const url = URL.createObjectURL(blob);
-        const name = `${namingPrefix}_${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+        const now = new Date();
+        const dateStr = now.toISOString().split("T")[0];
+        const timeStr = now.toTimeString().split(" ")[0].replace(/:/g, "-");
+        const name = `${namingPrefix}_${dateStr}_${timeStr}`;
+
         const newRec: SavedRecording = {
           id: Date.now().toString(),
           name,
@@ -590,7 +602,7 @@ export default function App() {
   const sendEmailReport = () => {
     const angleList = [...annotationsA, ...annotationsB]
       .filter((a) => a.type === "angle" && a.angleValue !== undefined)
-      .map((a, i) => `Angle ${i + 1}: ${a.angleValue}°`)
+      .map((a) => `Angle: ${a.angleValue}°`)
       .join("\n");
 
     const notes = [...annotationsA, ...annotationsB]
@@ -620,6 +632,22 @@ export default function App() {
     <div className="flex flex-col h-screen w-screen bg-[#121212] text-gray-100 font-sans select-none overflow-hidden">
       <input 
         type="file" 
+        ref={folderInputRef}
+        onChange={(e) => {
+          const files = e.target.files;
+          if (files && files.length > 0) {
+            // Extracts top-level folder name or path
+            const relPath = files[0].webkitRelativePath;
+            const folderName = relPath ? relPath.split('/')[0] : "Selected Folder";
+            setStoragePath(`C:\\PeakPodiatry\\${folderName}`);
+          }
+        }}
+        // @ts-ignore
+        webkitdirectory=""
+        className="hidden" 
+      />
+      <input 
+        type="file" 
         ref={fileInputRef} 
         onChange={handleImportVideo} 
         accept="video/*" 
@@ -628,15 +656,19 @@ export default function App() {
 
       {/* Header */}
       <header className="relative flex items-center justify-between px-6 py-2.5 bg-[#181818] border-b border-[#282828] z-30">
-        <div className="flex items-center gap-4 z-10">
+        <div className="flex items-center gap-3.5 z-10">
           <img 
             src="/peak-logo.png" 
             onError={(e) => { (e.target as HTMLImageElement).src = "/logo.svg"; }}
             alt="Peak Podiatry" 
-            className="h-8 w-auto object-contain"
+            className="h-8 w-auto object-contain [image-rendering:crisp-edges]"
           />
           <div className="h-5 w-[1px] bg-gray-700" />
-          <span className="text-xs font-mono font-bold tracking-widest text-[#009456]">+ONE</span>
+          <img 
+            src="/plus-one-logo.png" 
+            alt="+One" 
+            className="h-9 w-9 object-contain rounded-full shadow-sm"
+          />
         </div>
 
         <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 z-20">
@@ -922,13 +954,24 @@ export default function App() {
                 <label className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
                   Storage Directory
                 </label>
-                <input
-                  type="text"
-                  value={storagePath}
-                  onChange={(e) => setStoragePath(e.target.value)}
-                  className="w-full bg-[#121212] border border-[#333333] rounded px-3 py-1.5 text-xs text-white outline-none"
-                  placeholder="C:\PeakPodiatry\Captures"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    onClick={handleBrowseDirectory}
+                    value={storagePath}
+                    className="flex-1 bg-[#121212] border border-[#333333] hover:border-[#009456] rounded px-3 py-1.5 text-xs text-white outline-none cursor-pointer truncate"
+                    placeholder="C:\\PeakPodiatry\\Captures"
+                    title="Click to browse folder"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleBrowseDirectory}
+                    className="px-3 py-1.5 bg-[#252525] hover:bg-[#303030] text-xs font-semibold text-gray-200 border border-[#383838] rounded cursor-pointer"
+                  >
+                    Browse
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -1141,7 +1184,7 @@ export default function App() {
                 <button
                   onClick={exportSnapshot}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#252525] hover:bg-[#303030] text-xs text-gray-300 border border-gray-700 cursor-pointer"
-                  title="Export Still with Measurements (PNG)"
+                  title="Export High-Resolution Still with Measurements (PNG)"
                 >
                   <SnapshotIcon className="w-3.5 h-3.5 text-[#009456]" /> Still
                 </button>
