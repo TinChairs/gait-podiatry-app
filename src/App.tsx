@@ -1345,9 +1345,21 @@ export default function App() {
       </footer>
       {/* Floating Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-16 right-6 bg-[#1f1f1f] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-xl z-50 flex items-center gap-2 animate-fade-in">
+        <div 
+          onClick={async () => {
+            try {
+              const target = toastMessage.includes("Still") ? stillsStoragePath : videoStoragePath;
+              await invoke("open_in_explorer", { folderPath: target });
+            } catch (err) {
+              console.error(err);
+            }
+          }}
+          title="Click to reveal folder in File Explorer"
+          className="fixed bottom-16 right-6 bg-[#1e1e1e] hover:bg-[#252525] text-white text-xs px-4 py-2.5 rounded-lg border border-[#009456] shadow-2xl z-50 flex items-center gap-2 cursor-pointer transition select-none"
+        >
           <div className="w-2 h-2 rounded-full bg-[#009456]" />
           <span>{toastMessage}</span>
+          <span className="text-[10px] text-gray-400 underline ml-1 font-mono">Open</span>
         </div>
       )}
     </div>
