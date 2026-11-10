@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Camera, 
@@ -63,7 +64,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [namingPrefix, setNamingPrefix] = useState("Trial");
   const [preferredFrameRate, setPreferredFrameRate] = useState("60");
-  const [storagePath, setStoragePath] = useState("C:\\PeakPodiatry\\Captures");
+  const [storagePath, setStoragePath] = useState("C:\\Users\\Public\\Videos\\GaitVideos");
+  const [videoStoragePath, setVideoStoragePath] = useState("C:\\Users\\Public\\Videos\\GaitVideos");
+  const [stillsStoragePath, setStillsStoragePath] = useState("C:\\Users\\Public\\Pictures\\GaitStills");
 
   const handleBrowseDirectory = () => {
     if (folderInputRef.current) {
